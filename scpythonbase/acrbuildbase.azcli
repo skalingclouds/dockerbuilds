@@ -1,0 +1,1 @@
+az acr build --registry skalingcloudsbase --image python36:v1 .

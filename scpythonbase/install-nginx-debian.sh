@@ -1,14 +1,15 @@
-#! /usr/bin/env bash
+FROM debian:buster-slim
 
-# From official Nginx Docker image, as a script to re-use it, removing internal comments
-# Ref: https://github.com/nginxinc/docker-nginx/blob/594ce7a8bc26c85af88495ac94d5cd0096b306f7/mainline/buster/Dockerfile
+LABEL maintainer="NGINX Docker Maintainers <docker-maint@nginx.com>"
 
-# Standard set up Nginx
-export NGINX_VERSION=1.17.10
-export NJS_VERSION=0.3.9
-export PKG_RELEASE=1~buster
+ENV NGINX_VERSION   1.17.10
+ENV NJS_VERSION     0.3.9
+ENV PKG_RELEASE     1~buster
 
-set -x \
+RUN set -x \
+# create nginx user/group first, to be consistent throughout docker variants
+    && addgroup --system --gid 101 nginx \
+    && adduser --system --disabled-login --ingroup nginx --no-create-home --home /nonexistent --gecos "nginx user" --shell /bin/false --uid 101 nginx \
     && apt-get update \
     && apt-get install --no-install-recommends --no-install-suggests -y gnupg1 ca-certificates \
     && \
@@ -35,17 +36,24 @@ set -x \
     " \
     && case "$dpkgArch" in \
         amd64|i386) \
+# arches officialy built by upstream
             echo "deb https://nginx.org/packages/mainline/debian/ buster nginx" >> /etc/apt/sources.list.d/nginx.list \
             && apt-get update \
             ;; \
         *) \
+# we're on an architecture upstream doesn't officially build for
+# let's build binaries from the published source packages
             echo "deb-src https://nginx.org/packages/mainline/debian/ buster nginx" >> /etc/apt/sources.list.d/nginx.list \
             \
+# new directory for storing sources and .deb files
             && tempDir="$(mktemp -d)" \
             && chmod 777 "$tempDir" \
+# (777 to ensure APT's "_apt" user can access it too)
             \
+# save list of currently-installed packages so build dependencies can be cleanly removed later
             && savedAptMark="$(apt-mark showmanual)" \
             \
+# build .deb files from upstream's source packages (which are verified by apt-get)
             && apt-get update \
             && apt-get build-dep -y $nginxPackages \
             && ( \
@@ -53,14 +61,22 @@ set -x \
                 && DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" \
                     apt-get source --compile $nginxPackages \
             ) \
+# we don't remove APT lists here because they get re-downloaded and removed later
             \
+# reset apt-mark's "manual" list so that "purge --auto-remove" will remove all build dependencies
+# (which is done after we install the built packages so we don't have to redownload any overlapping dependencies)
             && apt-mark showmanual | xargs apt-mark auto > /dev/null \
             && { [ -z "$savedAptMark" ] || apt-mark manual $savedAptMark; } \
             \
+# create a temporary local APT repo to install from (so that dependency resolution can be handled by APT, as it should be)
             && ls -lAFh "$tempDir" \
             && ( cd "$tempDir" && dpkg-scanpackages . > Packages ) \
             && grep '^Package: ' "$tempDir/Packages" \
             && echo "deb [ trusted=yes ] file://$tempDir ./" > /etc/apt/sources.list.d/temp.list \
+# work around the following APT issue by using "Acquire::GzipIndexes=false" (overriding "/etc/apt/apt.conf.d/docker-gzip-indexes")
+#   Could not open file /var/lib/apt/lists/partial/_tmp_tmp.ODWljpQfkE_._Packages - open (13: Permission denied)
+#   ...
+#   E: Failed to fetch store:/var/lib/apt/lists/partial/_tmp_tmp.ODWljpQfkE_._Packages  Could not open file /var/lib/apt/lists/partial/_tmp_tmp.ODWljpQfkE_._Packages - open (13: Permission denied)
             && apt-get -o Acquire::GzipIndexes=false update \
             ;; \
     esac \
@@ -70,12 +86,18 @@ set -x \
                         gettext-base \
     && apt-get remove --purge --auto-remove -y ca-certificates && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/nginx.list \
     \
+# if we have leftovers from building, let's purge them (including extra, unnecessary build deps)
     && if [ -n "$tempDir" ]; then \
         apt-get purge -y --auto-remove \
         && rm -rf "$tempDir" /etc/apt/sources.list.d/temp.list; \
     fi
 
 # forward request and error logs to docker log collector
-ln -sf /dev/stdout /var/log/nginx/access.log \
+RUN ln -sf /dev/stdout /var/log/nginx/access.log \
     && ln -sf /dev/stderr /var/log/nginx/error.log
-# Standard set up Nginx finished
+
+EXPOSE 80
+
+STOPSIGNAL SIGTERM
+
+CMD ["nginx", "-g", "daemon off;"]

@@ -1,7 +1,7 @@
   
 FROM python:3.6-buster
 
-LABEL maintainer="Chris Skaling <chris.skaling@microsoft.com."
+LABEL maintainer="Chris Skaling <chris.skaling@microsoft.com>"
 
 COPY install-nginx-debian.sh /
 
